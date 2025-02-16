@@ -269,30 +269,28 @@ const processContacts = async (domain, hubId, q) => {
 };
 
 const processMeetings = async (domain, hubId, q) => {
+  console.log(`Starting processMeetings for HubSpot Account: ${hubId}`);
+  
   const account = domain.integrations.hubspot.accounts.find(account => account.hubId === hubId);
   const lastPulledDate = new Date(account.lastPulledDates.meetings || '2000-01-01');
   const now = new Date();
-
+  
   let hasMore = true;
   const offsetObject = {};
   const limit = 100;
 
   while (hasMore) {
+    console.log("Fetching meetings from HubSpot...");
     const lastModifiedDate = offsetObject.lastModifiedDate || lastPulledDate;
     const lastModifiedDateFilter = generateLastModifiedDateFilter(lastModifiedDate, now, 'hs_lastmodifieddate');
     const searchObject = {
       filterGroups: [lastModifiedDateFilter],
       sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
-      properties: [
-        'hs_meeting_title',
-        'hs_timestamp',
-        'createdAt',
-        'updatedAt'
-      ],
+      properties: ['hs_meeting_title', 'hs_timestamp', 'createdAt', 'updatedAt'],
       limit,
       after: offsetObject.after
     };
-
+    
     let searchResult = {};
     let tryCount = 0;
     while (tryCount <= 4) {
@@ -300,27 +298,26 @@ const processMeetings = async (domain, hubId, q) => {
         searchResult = await hubspotClient.crm.objects.meetings.searchApi.doSearch(searchObject);
         break;
       } catch (err) {
+        console.error(`Error fetching meetings (attempt ${tryCount + 1}):`, err);
         tryCount++;
-
         if (new Date() > expirationDate) await refreshAccessToken(domain, hubId);
-
         await new Promise(resolve => setTimeout(resolve, 5000 * Math.pow(2, tryCount)));
       }
     }
-
+    
     if (!searchResult || !searchResult.results || searchResult.results.length === 0) {
-      throw new Error('Failed to fetch meetings after 4 retries. Aborting.');
+      console.warn('No meetings found after retries. Skipping.');
+      return;
     }
-
+    
+    console.log(`Retrieved ${searchResult.results.length} meetings.`);
     const data = searchResult.results || [];
-    console.log('Fetched meetings batch');
     offsetObject.after = parseInt(searchResult.paging?.next?.after);
-
+    
     for (const meeting of data) {
       if (!meeting.properties) continue;
       
       const isCreated = new Date(meeting.createdAt) > lastPulledDate;
-      
       const actionTemplate = {
         includeInAnalytics: 0,
         meetingProperties: {
@@ -331,10 +328,15 @@ const processMeetings = async (domain, hubId, q) => {
         }
       };
       
-      // Fetch associated contacts (attendees)
+      console.log(`Fetching attendees for meeting ${meeting.id}`);
       const contactEmails = await fetchMeetingAttendees(meeting.id);
       
+      if (contactEmails.length === 0) {
+        console.warn(`⚠️ No attendees found for meeting ${meeting.id}`);
+      }
+      
       for (const email of contactEmails) {
+        console.log(`Queuing action for attendee: ${email}`);
         q.push({
           actionName: isCreated ? 'Meeting Created' : 'Meeting Updated',
           actionDate: new Date(isCreated ? meeting.createdAt : meeting.updatedAt),
@@ -343,7 +345,7 @@ const processMeetings = async (domain, hubId, q) => {
         });
       }
     }
-
+    
     if (!offsetObject?.after) {
       hasMore = false;
       break;
@@ -353,48 +355,39 @@ const processMeetings = async (domain, hubId, q) => {
     }
   }
 
+  console.log(`Meetings processed successfully for HubSpot Account: ${hubId}`);
   account.lastPulledDates.meetings = now;
   await saveDomain(domain);
-
-  return true;
 };
-
 
 
 const fetchMeetingAttendees = async (meetingId) => {
   try {
-    console.log(`🔄 Fetching attendee details for meeting ${meetingId}`);
-    
-    // Step 1: Fetch associated contact IDs
+    console.log(`Fetching attendee details for meeting ${meetingId}`);
     const contactIds = await fetchMeetingAssociations(meetingId);
-    
     if (contactIds.length === 0) {
-      console.log(`⚠️ No attendees found for meeting ${meetingId}`);
+      console.warn(`⚠️ No attendees found for meeting ${meetingId}`);
       return [];
     }
-    
-    console.log(`✅ Found ${contactIds.length} attendees for meeting ${meetingId}`);
-    
-    // Step 2: Fetch contact details using the contact IDs
+    console.log(`Found ${contactIds.length} attendees for meeting ${meetingId}`);
     return await fetchContactDetails(contactIds);
   } catch (error) {
-    console.error(`❌ Error fetching attendees for meeting ${meetingId}:`, error);
+    console.error(`Error fetching attendees for meeting ${meetingId}:`, error);
     return [];
   }
 };
 
 const fetchMeetingAssociations = async (meetingId) => {
   try {
-    console.log(`🔄 Fetching associated contacts for meeting ${meetingId}`);
+    console.log(`Fetching associated contacts for meeting ${meetingId}`);
     const response = await hubspotClient.apiRequest({
       method: 'get',
       path: `/crm/v3/objects/meetings/${meetingId}/associations/contacts`
     });
-
     const data = await response.json();
     return data.results?.map(contact => contact.id) || [];
   } catch (error) {
-    console.error(`❌ Error fetching associations for meeting ${meetingId}:`, error);
+    console.error(`Error fetching associations for meeting ${meetingId}:`, error);
     return [];
   }
 };
@@ -402,7 +395,6 @@ const fetchMeetingAssociations = async (meetingId) => {
 const fetchContactDetails = async (contactIds) => {
   try {
     console.log(`🔄 Fetching contact details for ${contactIds.length} attendees`);
-    
     const response = await hubspotClient.apiRequest({
       method: 'post',
       path: `/crm/v3/objects/contacts/batch/read`,
@@ -411,7 +403,6 @@ const fetchContactDetails = async (contactIds) => {
         inputs: contactIds.map(id => ({ id }))
       }
     });
-
     const contacts = await response.json();
     return contacts.results?.map(contact => contact.properties.email).filter(Boolean) || [];
   } catch (error) {
@@ -419,78 +410,6 @@ const fetchContactDetails = async (contactIds) => {
     return [];
   }
 };
-
-
-
-
-// const fetchMeetingAttendees = async (meetingId) => {
-//   const attendeeIds = await fetchMeetingDetails(meetingId);
-//   if (attendeeIds.length === 0) {
-//     console.log(`No attendees found for meeting ${meetingId}`);
-//     return [];
-//   }
-//   const attendeeEmails = await fetchContactDetails(attendeeIds);
-//   return attendeeEmails;
-// };
-
-// const fetchContactDetails = async (contactIds) => {
-//   try {
-//     const response = await hubspotClient.apiRequest({
-//       method: 'post',
-//       path: `/crm/v3/objects/contacts/batch/read`,
-//       body: {
-//         properties: ['email'],
-//         inputs: contactIds.map(id => ({ id }))
-//       }
-//     });
-
-//     const contacts = await response.json();
-//     return contacts.results.map(contact => contact.properties.email).filter(Boolean);
-//   } catch (error) {
-//     console.error('Error fetching contact details:', error);
-//     return [];
-//   }
-// };
-
-
-
-
-
-
-// const fetchMeetingDetails = async (meetingId) => {
-//   try {
-//     console.log(`🔄 Fetching meeting details for ID: ${meetingId}`);
-
-//     const response = await hubspotClient.apiRequest({
-//       method: 'get',
-//       path: `/crm/v3/objects/meetings/${meetingId}`,
-//       query: { properties: "hs_attendee_ids" }
-//     });
-
-//     const meeting = await response.json();
-//     console.log("✅ Meeting properties:", meeting.properties);
-
-//     return meeting.properties?.hs_attendee_ids || [];
-//   } catch (error) {
-//     console.error(`❌ Error fetching details for meeting ${meetingId}:`, error);
-//     return [];
-//   }
-// };
-
-// const fetchMeetingAttendees = async (meetingId) => {
-//   try {
-//     const response = await hubspotClient.apiRequest({
-//       method: 'get',
-//       path: `/crm/v3/objects/meetings/${meetingId}/associations/contacts`
-//     });
-
-//     const contacts = await response.json();
-//     return contacts.results.map(contact => contact.email).filter(Boolean);
-//   } catch (error) {
-//     console.error(`Error fetching attendees for meeting ${meetingId}:`, error);
-//     return [];
-//   }
-// };
 
 const createQueue = (domain, actions) => queue(async (action, callback) => {
   actions.push(action);
