@@ -22,9 +22,15 @@ const filterNullValuesFromObject = object =>
 
 const normalizePropertyName = key => key.toLowerCase().replace(/__c$/, '').replace(/^_+|_+$/g, '').replace(/_+/g, '_');
 
-const goal = actions => {
-  // this is where the data will be written to the database
-  console.log(actions);
+const goal = async (actions) => {
+  console.log("Writing to MongoDB:", JSON.stringify(actions, null, 2));
+  if (!actions.length) return;
+  try {
+    await mongoose.connection.db.collection("actions").insertMany(actions);
+    console.log("Successfully inserted actions into MongoDB");
+  } catch (error) {
+    console.error("Error inserting actions into MongoDB:", error);
+  }
 };
 
 module.exports = {

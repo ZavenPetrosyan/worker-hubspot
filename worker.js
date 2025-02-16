@@ -25,9 +25,7 @@ const generateLastModifiedDateFilter = (date, nowDate, propertyName = 'hs_lastmo
 
 
 const saveDomain = async domain => {
-  // disable this for testing purposes
-  return;
-
+  console.log("Saving domain state...");
   domain.markModified('integrations.hubspot.accounts');
   await domain.save();
 };
@@ -324,7 +322,7 @@ const processMeetings = async (domain, hubId, q) => {
           meeting_id: meeting.id,
           title: meeting.properties.hs_meeting_title,
           timestamp: meeting.properties.hs_timestamp,
-          createdate: meeting.properties.hs_createdate,
+          createdate: meeting.properties.createdAt,
         }
       };
       
@@ -332,7 +330,7 @@ const processMeetings = async (domain, hubId, q) => {
       const contactEmails = await fetchMeetingAttendees(meeting.id);
       
       if (contactEmails.length === 0) {
-        console.warn(`⚠️ No attendees found for meeting ${meeting.id}`);
+        console.warn(`No attendees found for meeting ${meeting.id}`);
       }
       
       for (const email of contactEmails) {
@@ -345,14 +343,6 @@ const processMeetings = async (domain, hubId, q) => {
         });
       }
     }
-    
-    if (!offsetObject?.after) {
-      hasMore = false;
-      break;
-    } else if (offsetObject?.after >= 9900) {
-      offsetObject.after = 0;
-      offsetObject.lastModifiedDate = new Date(data[data.length - 1].updatedAt).valueOf();
-    }
   }
 
   console.log(`Meetings processed successfully for HubSpot Account: ${hubId}`);
@@ -360,13 +350,12 @@ const processMeetings = async (domain, hubId, q) => {
   await saveDomain(domain);
 };
 
-
 const fetchMeetingAttendees = async (meetingId) => {
   try {
     console.log(`Fetching attendee details for meeting ${meetingId}`);
     const contactIds = await fetchMeetingAssociations(meetingId);
     if (contactIds.length === 0) {
-      console.warn(`⚠️ No attendees found for meeting ${meetingId}`);
+      console.warn(`No attendees found for meeting ${meetingId}`);
       return [];
     }
     console.log(`Found ${contactIds.length} attendees for meeting ${meetingId}`);
@@ -394,7 +383,7 @@ const fetchMeetingAssociations = async (meetingId) => {
 
 const fetchContactDetails = async (contactIds) => {
   try {
-    console.log(`🔄 Fetching contact details for ${contactIds.length} attendees`);
+    console.log(`Fetching contact details for ${contactIds.length} attendees`);
     const response = await hubspotClient.apiRequest({
       method: 'post',
       path: `/crm/v3/objects/contacts/batch/read`,
@@ -406,7 +395,7 @@ const fetchContactDetails = async (contactIds) => {
     const contacts = await response.json();
     return contacts.results?.map(contact => contact.properties.email).filter(Boolean) || [];
   } catch (error) {
-    console.error('❌ Error fetching contact details:', error);
+    console.error('Error fetching contact details:', error);
     return [];
   }
 };
